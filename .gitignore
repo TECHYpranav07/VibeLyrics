@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# PyInstaller build and distribution directories
+build/
+dist/
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local settings / configuration
+settings.json
+
+# IDE settings
+.idea/
+.vscode/
+.env
