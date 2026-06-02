@@ -8,13 +8,13 @@ Built with **Python** and **PyQt6** with a modern **glassmorphism** UI inspired 
 
 ---
 
-## 📥 Download (Pre-Built)
+## 📥 Download (Pre-Built Windows App)
 
-**No Python required!** Just download, extract, and run.
+**No Python required!** Just click, extract, and run.
 
-1. Download the latest `VibeLyrics_v1.0.0_Windows.zip` from Releases
-2. Extract the ZIP to any folder
-3. Run `VibeLyrics.exe`
+1. **[🚀 Click here to Download VibeLyrics_v1.0.0_Windows.zip (Direct Download)](VibeLyrics_v1.0.0_Windows.zip?raw=true)**
+2. Extract the ZIP folder to any directory.
+3. Run **`VibeLyrics.exe`**.
 4. That's it! 🎉
 
 > **Note:** Settings are saved to `%APPDATA%\VibeLyrics\settings.json` and persist across updates.
