@@ -332,6 +332,7 @@ class VibeLyricsApp:
         # Settings panel → apply settings
         self._settings_panel.settings_changed.connect(self._apply_settings)
         self._settings_panel.manual_search.connect(self._on_manual_search)
+        self._settings_panel.manual_clear.connect(self._on_manual_clear)
 
         # Overlay → settings panel
         self._overlay.settings_requested.connect(self.show_settings)
@@ -513,6 +514,11 @@ class VibeLyricsApp:
         # Fetch lyrics
         self._sync_engine.clear()
         self._lyrics_fetcher.fetch_lyrics_direct(title=title, artist=artist)
+
+    def _on_manual_clear(self):
+        """Exit manual lyric mode and resume media auto-detection."""
+        print("[App] Manual search cleared. Resuming auto-detection...")
+        self._media_handler.clear_manual()
 
     # ──────────────────────────────────────────────────────────
     # Sync Timer (50ms tick)

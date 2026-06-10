@@ -302,6 +302,7 @@ class MediaHandler(QObject):
         self._was_playing: bool = False
         self._manual_mode: bool = False
         self._manual_info: Optional[MediaInfo] = None
+        self._last_auto_media: Optional[MediaInfo] = None
         self._poll_in_progress: bool = False
         self._pending_poll_result: Optional[MediaInfo] = None
 
@@ -357,6 +358,9 @@ class MediaHandler(QObject):
             is_playing=True,
             source="manual",
         )
+        self._current_media = self._manual_info
+        self._is_playing = True
+        self._was_playing = True
         self.song_changed.emit(self._manual_info)
         self.status_message.emit(f"Manual: {artist} - {title}")
 
@@ -364,7 +368,10 @@ class MediaHandler(QObject):
         """Exit manual mode and resume auto-detection."""
         self._manual_mode = False
         self._manual_info = None
+        self._current_media = None
+        self._last_auto_media = None
         self.status_message.emit("Listening for music...")
+        QTimer.singleShot(0, self._poll)
 
     def _poll(self):
         """
@@ -373,9 +380,6 @@ class MediaHandler(QObject):
         Runs in a background thread to avoid blocking the UI,
         then marshals results back to the main thread via invokeMethod.
         """
-        if self._manual_mode:
-            return
-
         # Avoid stacking polls if a previous one hasn't finished
         if self._poll_in_progress:
             return
@@ -416,6 +420,36 @@ class MediaHandler(QObject):
 
     def _process_poll_result(self, media: Optional[MediaInfo]):
         """Process the polling result and emit appropriate signals."""
+        import time
+
+        if not self._manual_mode and media is not None:
+            self._last_auto_media = media
+
+        if self._manual_mode:
+            if media is not None:
+                if self._last_auto_media is None or not media.same_track(self._last_auto_media):
+                    print(f"[MediaHandler] Track changed on system player. Auto-exiting manual mode.")
+                    self._manual_mode = False
+                    self._manual_info = None
+                    self._last_auto_media = media
+                    # Fall through to process the auto-detected song
+                else:
+                    self._is_playing = media.is_playing
+                    if media.position_ms >= 0 and media.position_ms != self._last_reported_position_ms:
+                        self._last_reported_position_ms = media.position_ms
+                        self._last_position_ms = media.position_ms
+                        self._last_position_time = time.time()
+                    if media.is_playing != self._was_playing:
+                        self._was_playing = media.is_playing
+                        self.playback_changed.emit(media.is_playing)
+                    return
+            else:
+                # System player is stopped/paused (no media active)
+                if self._is_playing:
+                    self._is_playing = False
+                    self._was_playing = False
+                    self.playback_changed.emit(False)
+                return
 
         if media is None:
             # No media detected

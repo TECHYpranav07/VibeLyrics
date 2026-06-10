@@ -266,6 +266,7 @@ class SettingsPanel(QWidget):
 
     settings_changed = pyqtSignal(dict)
     manual_search = pyqtSignal(str, str)
+    manual_clear = pyqtSignal()
 
     def __init__(self, settings_manager: SettingsManager, parent=None):
         super().__init__(parent)
@@ -479,6 +480,10 @@ class SettingsPanel(QWidget):
         search_btn.clicked.connect(self._on_manual_search)
         search_layout.addWidget(search_btn)
 
+        clear_btn = QPushButton("🔄  Reset to Auto-Detection")
+        clear_btn.clicked.connect(self._on_manual_clear)
+        search_layout.addWidget(clear_btn)
+
         search_group.setLayout(search_layout)
         layout.addWidget(search_group)
 
@@ -665,6 +670,11 @@ class SettingsPanel(QWidget):
         artist = self._search_artist.text().strip()
         if title:
             self.manual_search.emit(title, artist)
+
+    def _on_manual_clear(self):
+        self._search_title.clear()
+        self._search_artist.clear()
+        self.manual_clear.emit()
 
     # ──────────────────────────────────────────────────────────
     # Windows Startup Registration
