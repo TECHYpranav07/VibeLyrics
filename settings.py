@@ -63,6 +63,8 @@ DEFAULT_SETTINGS = {
     "mini_mode": False,
     "global_offset_ms": 0,
     "song_offsets": {},
+    "dynamic_theme": True,
+    "translation_enabled": True,
 }
 
 
@@ -423,6 +425,14 @@ class SettingsPanel(QWidget):
         self._chk_startup.stateChanged.connect(self._on_startup_toggle)
         beh_layout.addWidget(self._chk_startup)
 
+        self._chk_dynamic_theme = QCheckBox("Dynamic theme from song art")
+        self._chk_dynamic_theme.stateChanged.connect(self._on_toggle)
+        beh_layout.addWidget(self._chk_dynamic_theme)
+
+        self._chk_translation = QCheckBox("Romanize lyrics (Romaji, Pinyin, etc.)")
+        self._chk_translation.stateChanged.connect(self._on_toggle)
+        beh_layout.addWidget(self._chk_translation)
+
         # Global Offset
         global_row = QHBoxLayout()
         global_label = QLabel("Global Delay:")
@@ -539,6 +549,8 @@ class SettingsPanel(QWidget):
         self._chk_click_through.setChecked(s.get("click_through", False))
         self._chk_auto_hide.setChecked(s.get("auto_hide", True))
         self._chk_startup.setChecked(s.get("start_with_windows", False))
+        self._chk_dynamic_theme.setChecked(s.get("dynamic_theme", True))
+        self._chk_translation.setChecked(s.get("translation_enabled", True))
 
         # Global offset
         global_ms = s.get("global_offset_ms", 0)
@@ -619,6 +631,8 @@ class SettingsPanel(QWidget):
         self._settings.set("animations_enabled", self._chk_animations.isChecked())
         self._settings.set("click_through", self._chk_click_through.isChecked())
         self._settings.set("auto_hide", self._chk_auto_hide.isChecked())
+        self._settings.set("dynamic_theme", self._chk_dynamic_theme.isChecked())
+        self._settings.set("translation_enabled", self._chk_translation.isChecked())
         self._emit_settings()
 
     def _on_startup_toggle(self):

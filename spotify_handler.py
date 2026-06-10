@@ -38,6 +38,7 @@ class MediaInfo:
     position_ms: int = 0         # Current playback position
     duration_ms: int = 0         # Total track duration
     source: str = "unknown"      # "smtc", "window_title", "manual"
+    thumbnail_bytes: Optional[bytes] = None
 
     @property
     def is_valid(self) -> bool:
@@ -139,6 +140,20 @@ class SMTCDetector:
             # Get media properties (title, artist, album)
             properties = await session.try_get_media_properties_async()
 
+            thumbnail_bytes = None
+            if properties and properties.thumbnail:
+                try:
+                    stream = await properties.thumbnail.open_read_async()
+                    if stream:
+                        from winsdk.windows.storage.streams import DataReader
+                        reader = DataReader(stream.get_input_stream_at(0))
+                        await reader.load_async(stream.size)
+                        buffer = bytearray(stream.size)
+                        reader.read_bytes(buffer)
+                        thumbnail_bytes = bytes(buffer)
+                except Exception as ex:
+                    print(f"[SMTCDetector] Failed to read thumbnail: {ex}")
+
             # Get playback info (playing/paused, position)
             playback = session.get_playback_info()
             timeline = session.get_timeline_properties()
@@ -148,6 +163,7 @@ class SMTCDetector:
                 artist=properties.artist or "",
                 album=properties.album_title or "",
                 source="smtc",
+                thumbnail_bytes=thumbnail_bytes,
             )
 
             # Playback status

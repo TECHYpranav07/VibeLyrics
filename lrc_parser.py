@@ -26,6 +26,7 @@ class LyricLine:
     text: str               # The lyric text
     duration_ms: int = 0    # Duration until next line (calculated after parsing)
     words: list = field(default_factory=list)  # Individual words for karaoke mode
+    translation: Optional[str] = None # Translated English text (if any)
 
 
 @dataclass

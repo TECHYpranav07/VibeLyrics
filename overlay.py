@@ -67,6 +67,8 @@ class LyricLabel(QWidget):
         super().__init__(parent)
         self._role = role
         self._text = ""
+        self._translation = ""
+        self._accent_color = QColor("#7C3AED")
         self._font_size = DEFAULT_FONT_SIZE
         self._font_family = DEFAULT_FONT_FAMILY
         self._font_color = QColor(DEFAULT_FONT_COLOR)
@@ -74,6 +76,7 @@ class LyricLabel(QWidget):
         self._base_opacity = self._get_role_opacity()
         self._alignment = Qt.AlignmentFlag.AlignCenter
         self._animations_enabled = True
+        self._translation_enabled = True
 
         # Opacity effect for fade animations
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -101,19 +104,21 @@ class LyricLabel(QWidget):
         else:
             return 0.65
 
-    def set_text(self, text: str, animate: bool = True):
+    def set_text(self, text: str, translation: str = "", animate: bool = True):
         """Update the displayed text with optional animation."""
-        if text == self._text:
+        if text == self._text and translation == self._translation:
             return
 
         if animate and self._animations_enabled and text:
-            self._animate_text_change(text)
+            self._animate_text_change(text, translation)
         else:
             self._text = text
+            self._translation = translation
             self._karaoke_progress = 0.0
+            self._update_font_metrics()
             self.update()
 
-    def _animate_text_change(self, new_text: str):
+    def _animate_text_change(self, new_text: str, new_translation: str):
         """Animate the transition between lyric lines."""
         # Fade out → change text → fade in
         fade_out = QPropertyAnimation(self._opacity_effect, b"opacity", self)
@@ -130,7 +135,9 @@ class LyricLabel(QWidget):
 
         def on_fade_out_finished():
             self._text = new_text
+            self._translation = new_translation
             self._karaoke_progress = 0.0
+            self._update_font_metrics()
             self.update()
             fade_in.start()
 
@@ -139,6 +146,17 @@ class LyricLabel(QWidget):
 
         # Keep reference to prevent garbage collection
         self._current_anim = (fade_out, fade_in)
+
+    def set_accent_color(self, color: QColor):
+        """Set accent color for karaoke text highlight."""
+        self._accent_color = color
+        self.update()
+
+    def set_translation_enabled(self, enabled: bool):
+        """Enable or disable translation display."""
+        self._translation_enabled = enabled
+        self._update_font_metrics()
+        self.update()
 
     def set_karaoke_progress(self, progress: float):
         """Set karaoke highlighting progress (0.0 to 1.0)."""
@@ -178,10 +196,17 @@ class LyricLabel(QWidget):
         font = QFont(self._font_family, int(self._font_size * scale))
         font.setWeight(QFont.Weight.Bold if self._role == "current" else QFont.Weight.Normal)
         metrics = QFontMetrics(font)
-        self.setMinimumHeight(metrics.height() + 12)
+        
+        height = metrics.height() + 12
+        if hasattr(self, '_translation') and self._translation and getattr(self, '_translation_enabled', True):
+            trans_font = QFont(self._font_family, int(self._font_size * scale * 0.7))
+            trans_metrics = QFontMetrics(trans_font)
+            height += trans_metrics.height() + 6
+            
+        self.setMinimumHeight(height)
 
     def paintEvent(self, event):
-        """Custom paint for the lyric text with karaoke highlighting."""
+        """Custom paint for the lyric text with karaoke highlighting and optional translation."""
         if not self._text:
             return
 
@@ -189,67 +214,165 @@ class LyricLabel(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-        # Configure font
         scale = self._get_role_font_scale()
-        font = QFont(self._font_family, int(self._font_size * scale))
+        base_size = int(self._font_size * scale)
+        
+        # Configure original text font
+        font = QFont(self._font_family, base_size)
         if self._role == "current":
             font.setWeight(QFont.Weight.Bold)
         else:
             font.setWeight(QFont.Weight.Normal)
-        painter.setFont(font)
-
+            
         rect = self.rect().adjusted(20, 0, -20, 0)
-
-        if self._role == "current" and self._karaoke_progress > 0.01:
-            # Karaoke mode: draw highlighted portion + unhighlighted portion
+        
+        # Auto-fit original text size to width
+        metrics = QFontMetrics(font)
+        text_width = metrics.horizontalAdvance(self._text)
+        max_width = rect.width()
+        
+        if text_width > max_width and max_width > 0:
+            fit_ratio = max_width / text_width
+            final_size = max(8, int(base_size * fit_ratio))
+            font.setPointSize(final_size)
             metrics = QFontMetrics(font)
             text_width = metrics.horizontalAdvance(self._text)
-
-            # Calculate text position based on alignment
-            if self._alignment == Qt.AlignmentFlag.AlignCenter:
-                text_x = rect.x() + (rect.width() - text_width) // 2
-            elif self._alignment == Qt.AlignmentFlag.AlignRight:
-                text_x = rect.x() + rect.width() - text_width
+            
+        painter.setFont(font)
+        
+        # Determine rendering rectangles
+        if hasattr(self, '_translation') and self._translation and getattr(self, '_translation_enabled', True):
+            # Render bilingual: Romanization on top (primary), original on bottom (secondary)
+            
+            # Setup primary font (large, bold for current line) and calculate primary text (Romanization)
+            prim_font = QFont(font) # Copy parent font configuration
+            prim_text = self._translation
+            
+            # Auto-fit primary text (Romanization) to width
+            prim_metrics = QFontMetrics(prim_font)
+            prim_width = prim_metrics.horizontalAdvance(prim_text)
+            
+            if prim_width > max_width and max_width > 0:
+                prim_fit_ratio = max_width / prim_width
+                prim_final_size = max(8, int(base_size * prim_fit_ratio))
+                prim_font.setPointSize(prim_final_size)
+                prim_metrics = QFontMetrics(prim_font)
+                prim_width = prim_metrics.horizontalAdvance(prim_text)
+                
+            # Setup secondary font (smaller, normal weight) and calculate secondary text (original Japanese)
+            sec_scale = scale * 0.7
+            sec_base_size = int(self._font_size * sec_scale)
+            sec_font = QFont(self._font_family, sec_base_size)
+            sec_font.setWeight(QFont.Weight.Normal)
+            sec_text = self._text
+            
+            # Auto-fit secondary text (original) to width
+            sec_metrics = QFontMetrics(sec_font)
+            sec_width = sec_metrics.horizontalAdvance(sec_text)
+            
+            if sec_width > max_width and max_width > 0:
+                sec_fit_ratio = max_width / sec_width
+                sec_final_size = max(6, int(sec_base_size * sec_fit_ratio))
+                sec_font.setPointSize(sec_final_size)
+                sec_metrics = QFontMetrics(sec_font)
+                sec_width = sec_metrics.horizontalAdvance(sec_text)
+                
+            # Total text block height
+            total_height = prim_metrics.height() + sec_metrics.height() + 6
+            start_y = rect.y() + (rect.height() - total_height) // 2
+            
+            prim_rect = QRect(rect.x(), start_y, rect.width(), prim_metrics.height())
+            sec_rect = QRect(rect.x(), start_y + prim_metrics.height() + 6, rect.width(), sec_metrics.height())
+            
+            # --- Draw Primary Text (Romanization / Translation) ---
+            painter.setFont(prim_font)
+            if self._role == "current" and self._karaoke_progress > 0.01:
+                # Karaoke drawing
+                if self._alignment == Qt.AlignmentFlag.AlignCenter:
+                    text_x = prim_rect.x() + (prim_rect.width() - prim_width) // 2
+                elif self._alignment == Qt.AlignmentFlag.AlignRight:
+                    text_x = prim_rect.x() + prim_rect.width() - prim_width
+                else:
+                    text_x = prim_rect.x()
+                text_y = prim_rect.y() + prim_metrics.ascent()
+                
+                # Shadow
+                painter.setPen(QColor(self._font_color.red(), self._font_color.green(), self._font_color.blue(), 40))
+                painter.drawText(text_x + 2, text_y + 2, prim_text)
+                
+                # Unhighlighted
+                dim_color = QColor(self._font_color)
+                dim_color.setAlpha(100)
+                painter.setPen(dim_color)
+                painter.drawText(text_x, text_y, prim_text)
+                
+                # Highlighted
+                highlight_width = int(prim_width * self._karaoke_progress)
+                painter.save()
+                painter.setClipRect(text_x, 0, highlight_width, self.height())
+                accent = getattr(self, '_accent_color', QColor("#7C3AED"))
+                painter.setPen(accent)
+                painter.drawText(text_x, text_y, prim_text)
+                painter.restore()
             else:
-                text_x = rect.x()
-
-            text_y = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) // 2
-
-            # Draw text shadow / glow
-            painter.setPen(QColor(self._font_color.red(), self._font_color.green(),
-                                  self._font_color.blue(), 40))
-            painter.drawText(text_x + 2, text_y + 2, self._text)
-
-            # Draw unhighlighted text (dimmed)
-            dim_color = QColor(self._font_color)
-            dim_color.setAlpha(100)
-            painter.setPen(dim_color)
-            painter.drawText(text_x, text_y, self._text)
-
-            # Draw highlighted portion (full brightness) with clip
-            highlight_width = int(text_width * self._karaoke_progress)
-            painter.save()
-            painter.setClipRect(text_x, 0, highlight_width, self.height())
-
-            # Bright accent color for highlighted portion
-            accent = QColor("#7C3AED")  # Purple accent
-            painter.setPen(accent)
-            painter.drawText(text_x, text_y, self._text)
-            painter.restore()
-        else:
-            # Standard text rendering
-            # Draw subtle text shadow for depth
-            shadow_color = QColor(0, 0, 0, 80)
+                # Standard drawing for primary
+                shadow_color = QColor(0, 0, 0, 80)
+                painter.setPen(shadow_color)
+                painter.drawText(prim_rect.adjusted(2, 2, 2, 2), self._alignment | Qt.AlignmentFlag.AlignVCenter, prim_text)
+                
+                painter.setPen(self._font_color)
+                painter.drawText(prim_rect, self._alignment | Qt.AlignmentFlag.AlignVCenter, prim_text)
+                
+            # --- Draw Secondary Text (Original Japanese) ---
+            painter.setFont(sec_font)
+            sec_color = QColor(self._font_color)
+            sec_color.setAlpha(160) # Slightly dimmed
+            
+            shadow_color = QColor(0, 0, 0, 60)
             painter.setPen(shadow_color)
-            painter.drawText(rect.adjusted(2, 2, 2, 2),
-                             self._alignment | Qt.AlignmentFlag.AlignVCenter,
-                             self._text)
-
-            # Draw main text
-            painter.setPen(self._font_color)
-            painter.drawText(rect,
-                             self._alignment | Qt.AlignmentFlag.AlignVCenter,
-                             self._text)
+            painter.drawText(sec_rect.adjusted(1, 1, 1, 1), self._alignment | Qt.AlignmentFlag.AlignVCenter, sec_text)
+            
+            painter.setPen(sec_color)
+            painter.drawText(sec_rect, self._alignment | Qt.AlignmentFlag.AlignVCenter, sec_text)
+            
+        else:
+            # Standard single-line rendering
+            if self._role == "current" and self._karaoke_progress > 0.01:
+                # Karaoke drawing
+                if self._alignment == Qt.AlignmentFlag.AlignCenter:
+                    text_x = rect.x() + (rect.width() - text_width) // 2
+                elif self._alignment == Qt.AlignmentFlag.AlignRight:
+                    text_x = rect.x() + rect.width() - text_width
+                else:
+                    text_x = rect.x()
+                text_y = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) // 2
+                
+                # Shadow
+                painter.setPen(QColor(self._font_color.red(), self._font_color.green(), self._font_color.blue(), 40))
+                painter.drawText(text_x + 2, text_y + 2, self._text)
+                
+                # Unhighlighted
+                dim_color = QColor(self._font_color)
+                dim_color.setAlpha(100)
+                painter.setPen(dim_color)
+                painter.drawText(text_x, text_y, self._text)
+                
+                # Highlighted
+                highlight_width = int(text_width * self._karaoke_progress)
+                painter.save()
+                painter.setClipRect(text_x, 0, highlight_width, self.height())
+                accent = getattr(self, '_accent_color', QColor("#7C3AED"))
+                painter.setPen(accent)
+                painter.drawText(text_x, text_y, self._text)
+                painter.restore()
+            else:
+                # Standard text rendering
+                shadow_color = QColor(0, 0, 0, 80)
+                painter.setPen(shadow_color)
+                painter.drawText(rect.adjusted(2, 2, 2, 2), self._alignment | Qt.AlignmentFlag.AlignVCenter, self._text)
+                
+                painter.setPen(self._font_color)
+                painter.drawText(rect, self._alignment | Qt.AlignmentFlag.AlignVCenter, self._text)
 
         painter.end()
 
@@ -331,6 +454,9 @@ class OverlayWindow(QWidget):
         self._animations_enabled = True
         self._auto_hide = True
         self._is_idle = False
+        self._accent_color = QColor("#7C3AED")
+        self._glow_color = QColor("#1E1B4B")
+        self._base_font_size = DEFAULT_FONT_SIZE
 
         # ── Layout ──
         self._setup_ui()
@@ -403,10 +529,10 @@ class OverlayWindow(QWidget):
         Custom paint for the glassmorphism background.
         
         Draws a semi-transparent rounded rectangle with:
-        - Dark background with adjustable opacity
+        - Dark background blended with cover art glow
         - Subtle gradient overlay
-        - Thin border with low opacity
-        - Inner shadow for depth
+        - Thin border with accent-tinted low opacity
+        - Inner shadow and drag/resize visual grip
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -422,20 +548,32 @@ class OverlayWindow(QWidget):
             radius, radius
         )
 
-        # ── Main background fill ──
         bg_alpha = int(self._bg_opacity * 255)
-        bg_color = QColor(12, 12, 20, bg_alpha)
 
-        # Subtle gradient (top slightly lighter)
+        # Mix/blend dynamic glow color into the background gradient
+        c1 = QColor(25, 25, 40)
+        c2 = QColor(8, 8, 16)
+        if hasattr(self, '_glow_color') and self._glow_color:
+            # Blend 25% of the dynamic glow color with base dark values
+            c1 = self._blend_colors(QColor(25, 25, 40), self._glow_color, 0.25)
+            c2 = self._blend_colors(QColor(8, 8, 16), self._glow_color, 0.25)
+
+        c1.setAlpha(bg_alpha)
+        c2.setAlpha(bg_alpha)
+
         gradient = QLinearGradient(0, 0, 0, rect.height())
-        gradient.setColorAt(0.0, QColor(25, 25, 40, bg_alpha))
-        gradient.setColorAt(0.5, QColor(15, 15, 28, bg_alpha))
-        gradient.setColorAt(1.0, QColor(8, 8, 16, bg_alpha))
+        gradient.setColorAt(0.0, c1)
+        gradient.setColorAt(1.0, c2)
 
         painter.fillPath(path, QBrush(gradient))
 
-        # ── Border ──
-        border_pen = QPen(QColor(255, 255, 255, 25), 1.0)
+        # ── Border (subtle tint from accent color) ──
+        border_color = QColor(255, 255, 255, 25)
+        if hasattr(self, '_accent_color') and self._accent_color:
+            border_color = QColor(self._accent_color)
+            border_color.setAlpha(40) # Subtle accent glow border
+
+        border_pen = QPen(border_color, 1.0)
         painter.setPen(border_pen)
         painter.drawPath(path)
 
@@ -451,11 +589,26 @@ class OverlayWindow(QWidget):
         highlight_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
         painter.fillPath(highlight_path, QBrush(highlight_gradient))
 
+        # ── Subtle Drag/Resize grip visual indicator (diagonal lines in bottom right) ──
+        w, h = rect.width(), rect.height()
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1.5))
+        painter.drawLine(w - 12, h - 4, w - 4, h - 12)
+        painter.drawLine(w - 8, h - 4, w - 4, h - 8)
+        painter.drawLine(w - 4, h - 4, w - 4, h - 4)
+
         painter.end()
 
+    def _blend_colors(self, color1: QColor, color2: QColor, ratio: float) -> QColor:
+        """Linearly interpolate between two colors."""
+        r = int(color1.red() * (1 - ratio) + color2.red() * ratio)
+        g = int(color1.green() * (1 - ratio) + color2.green() * ratio)
+        b = int(color1.blue() * (1 - ratio) + color2.blue() * ratio)
+        return QColor(r, g, b)
+
     def resizeEvent(self, event):
-        """Reposition the resize grip on window resize."""
+        """Reposition size grip and scale fonts on window resize."""
         super().resizeEvent(event)
+        self._scale_fonts()
         # Place grip at bottom-right
         self._size_grip.move(
             self.width() - self._size_grip.width(),
@@ -477,15 +630,18 @@ class OverlayWindow(QWidget):
 
         # Previous line
         prev_text = context.previous.text if context.previous else ""
-        self._prev_label.set_text(prev_text, animate=animate)
+        prev_trans = getattr(context.previous, 'translation', "") if context.previous else ""
+        self._prev_label.set_text(prev_text, prev_trans, animate=animate)
 
         # Current line
         curr_text = context.current.text if context.current else ""
-        self._curr_label.set_text(curr_text, animate=animate)
+        curr_trans = getattr(context.current, 'translation', "") if context.current else ""
+        self._curr_label.set_text(curr_text, curr_trans, animate=animate)
 
         # Next line
         next_text = context.next.text if context.next else ""
-        self._next_label.set_text(next_text, animate=animate)
+        next_trans = getattr(context.next, 'translation', "") if context.next else ""
+        self._next_label.set_text(next_text, next_trans, animate=animate)
 
         # Karaoke progress
         self._curr_label.set_karaoke_progress(context.progress)
@@ -527,10 +683,33 @@ class OverlayWindow(QWidget):
     # ──────────────────────────────────────────────────────────
 
     def set_font_size(self, size: int):
-        """Update font size for all lyric labels."""
-        self._prev_label.set_font_size(size)
-        self._curr_label.set_font_size(size)
-        self._next_label.set_font_size(size)
+        """Update base font size and scale all labels."""
+        self._base_font_size = size
+        self._scale_fonts()
+
+    def _scale_fonts(self):
+        """Scale font sizes dynamically based on window height."""
+        ratio = self.height() / 180.0
+        scaled_size = max(10, int(self._base_font_size * ratio))
+        self._prev_label.set_font_size(scaled_size)
+        self._curr_label.set_font_size(scaled_size)
+        self._next_label.set_font_size(scaled_size)
+
+    def set_dynamic_theme_colors(self, accent: QColor, glow: QColor):
+        """Update colors based on cover art dominant colors."""
+        self._accent_color = accent
+        self._glow_color = glow
+        
+        # Pass accent to labels for karaoke highlighting
+        self._prev_label.set_accent_color(accent)
+        self._curr_label.set_accent_color(accent)
+        self._next_label.set_accent_color(accent)
+            
+        self.update()
+
+    def reset_theme_colors(self):
+        """Reset theme to default purple/indigo."""
+        self.set_dynamic_theme_colors(QColor("#7C3AED"), QColor("#1E1B4B"))
 
     def set_font_family(self, family: str):
         """Update font family for all lyric labels."""
@@ -572,6 +751,13 @@ class OverlayWindow(QWidget):
         self._prev_label.set_animations_enabled(enabled)
         self._curr_label.set_animations_enabled(enabled)
         self._next_label.set_animations_enabled(enabled)
+
+    def set_translation_enabled(self, enabled: bool):
+        """Enable or disable lyrics translation on the overlay."""
+        self._translation_enabled = enabled
+        self._prev_label.set_translation_enabled(enabled)
+        self._curr_label.set_translation_enabled(enabled)
+        self._next_label.set_translation_enabled(enabled)
 
     def set_always_on_top(self, enabled: bool):
         """Toggle always-on-top behavior."""

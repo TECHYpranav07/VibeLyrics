@@ -30,7 +30,7 @@ def resource_path(relative_path: str) -> str:
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction, QFont, QLinearGradient, QBrush
+from PyQt6.QtGui import QIcon, QPixmap, QImage, QPainter, QColor, QAction, QFont, QLinearGradient, QBrush
 
 from overlay import OverlayWindow
 from settings import SettingsPanel, SettingsManager
@@ -387,6 +387,16 @@ class VibeLyricsApp:
         self._sync_engine.clear()
         self._overlay.update_lyrics(self._sync_engine.get_context(0))
 
+        # Dynamic cover art theming
+        if self._settings_manager.get("dynamic_theme", True) and hasattr(media_info, 'thumbnail_bytes') and media_info.thumbnail_bytes:
+            image = QImage()
+            if image.loadFromData(media_info.thumbnail_bytes):
+                self._apply_dynamic_theme(image)
+            else:
+                self._overlay.reset_theme_colors()
+        else:
+            self._overlay.reset_theme_colors()
+
         # Auto-show overlay when a song is detected
         if not self._overlay.isVisible():
             self._overlay.show()
@@ -401,6 +411,47 @@ class VibeLyricsApp:
 
         # Update tray tooltip
         self._tray.set_tooltip(f"VibeLyrics — {media_info.artist} – {media_info.title}")
+
+    def _apply_dynamic_theme(self, image: QImage):
+        """Extract dominant colors from album art and apply to overlay."""
+        if image.isNull():
+            self._overlay.reset_theme_colors()
+            return
+
+        # Scale down to 8x8 to extract average and dominant colors quickly
+        small = image.scaled(8, 8, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+        
+        vibrant_color = None
+        max_sat = -1
+        
+        r_sum, g_sum, b_sum = 0, 0, 0
+        for x in range(8):
+            for y in range(8):
+                c = QColor(small.pixelColor(x, y))
+                r_sum += c.red()
+                g_sum += c.green()
+                b_sum += c.blue()
+                
+                # Extract HSV to find the most vibrant color
+                h, s, v, a = c.getHsv()
+                if s > max_sat and v > 50: # Avoid near-black or grey colors
+                    max_sat = s
+                    vibrant_color = c
+                    
+        avg_color = QColor(r_sum // 64, g_sum // 64, b_sum // 64)
+        
+        if vibrant_color is None or max_sat < 30:
+            # Fallback to average color or default purple if very dark/grey
+            vibrant_color = avg_color if avg_color.value() > 50 else QColor("#7C3AED")
+            
+        h, s, v, a = vibrant_color.getHsv()
+        # Enforce vibrance and brightness for text highlight
+        vibrant_color = QColor.fromHsv(h, max(s, 150), max(v, 200))
+        
+        # Glow background: dark version of the dominant color
+        bg_glow = QColor.fromHsv(h, max(s, 100), 30)
+        
+        self._overlay.set_dynamic_theme_colors(vibrant_color, bg_glow)
 
     def _on_playback_changed(self, is_playing: bool):
         """Called when play/pause state changes."""
@@ -423,9 +474,21 @@ class VibeLyricsApp:
 
         if result.is_synced and result.synced_lyrics:
             lines = parse_lrc(result.synced_lyrics)
+            # Map translations if present
+            if getattr(result, "translations", None):
+                for line in lines:
+                    line_s = line.text.strip()
+                    if line_s in result.translations:
+                        line.translation = result.translations[line_s]
             self._sync_engine.load_lyrics(lines, is_synced=True)
         elif result.plain_lyrics:
             lines = parse_plain_lyrics(result.plain_lyrics)
+            # Map translations if present
+            if getattr(result, "translations", None):
+                for line in lines:
+                    line_s = line.text.strip()
+                    if line_s in result.translations:
+                        line.translation = result.translations[line_s]
             self._sync_engine.load_lyrics(lines, is_synced=False)
             self._overlay.show_plain_lyrics_message()
         else:
@@ -511,6 +574,32 @@ class VibeLyricsApp:
         self._overlay.set_animations_enabled(settings.get("animations_enabled", True))
         self._overlay.set_always_on_top(settings.get("always_on_top", True))
         self._overlay.set_auto_hide(settings.get("auto_hide", True))
+
+        # Check if translation setting changed
+        old_trans = getattr(self, "_translation_enabled", None)
+        new_trans = settings.get("translation_enabled", True)
+        self._translation_enabled = new_trans
+        self._overlay.set_translation_enabled(new_trans)
+
+        if old_trans is not None and old_trans != new_trans:
+            # Clear cache and re-fetch currently playing song's lyrics
+            self._lyrics_fetcher.clear_cache()
+            if self._current_track:
+                print("[App] Translation setting changed. Re-fetching lyrics...")
+                self._lyrics_fetcher.fetch_lyrics_direct(
+                    title=self._current_track.title,
+                    artist=self._current_track.artist,
+                    album=self._current_track.album,
+                    duration=self._current_track.duration_ms / 1000.0 if self._current_track.duration_ms else 0,
+                )
+
+        # Check dynamic theme setting
+        if not settings.get("dynamic_theme", True):
+            self._overlay.reset_theme_colors()
+        elif self._current_track and hasattr(self._current_track, 'thumbnail_bytes') and self._current_track.thumbnail_bytes:
+            image = QImage()
+            if image.loadFromData(self._current_track.thumbnail_bytes):
+                self._apply_dynamic_theme(image)
 
         # Click-through
         click_through = settings.get("click_through", False)

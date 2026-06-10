@@ -17,6 +17,11 @@ import subprocess
 import sys
 import os
 import shutil
+import io
+
+# Force console output to UTF-8 encoding to prevent UnicodeEncodeError on Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # ──────────────────────────────────────────────────────────────
 # Paths

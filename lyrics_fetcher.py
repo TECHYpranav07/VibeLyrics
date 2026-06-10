@@ -38,6 +38,8 @@ class LyricsResult:
         self.is_synced: bool = False     # Whether synced lyrics were found
         self.found: bool = False         # Whether any lyrics were found
         self.error: str = ""             # Error message if fetch failed
+        self.translations: dict = {}     # original text -> English translation
+        self.source_lang: str = "en"     # Detected source language
 
     def __repr__(self):
         return (
@@ -239,6 +241,85 @@ def get_lyrics_by_signature(
     return result
 
 
+def _process_translation(result: LyricsResult):
+    """Romanize lyrics if needed, mapping original text to romanized text (Romaji, Pinyin, etc.)."""
+    try:
+        from settings import SettingsManager
+        settings = SettingsManager()
+        translation_enabled = settings.get("translation_enabled", True)
+    except Exception:
+        translation_enabled = True
+
+    if not (result.found and translation_enabled):
+        return
+
+    lines_to_translate = []
+    from lrc_parser import parse_lrc, parse_plain_lyrics
+    
+    if result.is_synced and result.synced_lyrics:
+        parsed = parse_lrc(result.synced_lyrics)
+        lines_to_translate = [line.text for line in parsed if line.text.strip()]
+    elif result.plain_lyrics:
+        parsed = parse_plain_lyrics(result.plain_lyrics)
+        lines_to_translate = [line.text for line in parsed if line.text.strip()]
+        
+    if lines_to_translate:
+        # De-duplicate lines to minimize API calls
+        unique_lines = list(set([l.strip() for l in lines_to_translate if l.strip()]))
+        if not unique_lines:
+            return
+
+        import concurrent.futures
+        session = _get_session()
+        
+        translations_map = {}
+        detected_languages = []
+
+        def fetch_line(text):
+            try:
+                r = session.get(
+                    "https://translate.googleapis.com/translate_a/single",
+                    params={
+                        "client": "gtx",
+                        "sl": "auto",
+                        "tl": "en",
+                        "dt": "rm",
+                        "q": text,
+                    },
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data and data[0] and len(data[0]) > 0:
+                        last_elem = data[0][-1]
+                        if len(last_elem) > 3 and last_elem[3]:
+                            return text, last_elem[3].strip(), data[2]
+                return text, None, "en"
+            except Exception:
+                return text, None, "en"
+
+        # Fetch transliterations in parallel using connection pooling
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            futures = [executor.submit(fetch_line, line) for line in unique_lines]
+            for future in concurrent.futures.as_completed(futures):
+                orig, translit, lang = future.result()
+                if lang and lang != "en" and lang != "error":
+                    detected_languages.append(lang)
+                if translit and orig.lower().strip() != translit.lower().strip():
+                    translations_map[orig] = translit
+
+        # Determine dominant language
+        if detected_languages:
+            from collections import Counter
+            result.source_lang = Counter(detected_languages).most_common(1)[0][0]
+        else:
+            result.source_lang = "en"
+
+        # Apply mapped translations if the source language is non-English
+        if result.source_lang != "en":
+            result.translations = translations_map
+
+
 # ──────────────────────────────────────────────────────────────
 # QThread Worker — runs fetches in background
 # ──────────────────────────────────────────────────────────────
@@ -288,6 +369,10 @@ class LyricsFetchWorker(QObject):
             result = get_lyrics_by_signature(title, artist, album, duration)
         else:
             result = search_lyrics(title, artist)
+
+        # Translate if needed
+        if result.found:
+            _process_translation(result)
 
         # Cache the result (even failures, to avoid repeated requests)
         self._cache[key] = result
@@ -387,6 +472,10 @@ class LyricsFetcher(QObject):
             if result is None:
                 # If neither succeeded, just take the result of the search (even if it's an error)
                 result = search_lyrics(title, artist)
+
+            # Translate if needed
+            if result.found:
+                _process_translation(result)
 
             # Cache the result
             self._worker._cache[key] = result
