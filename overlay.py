@@ -18,7 +18,7 @@ Features:
 import sys
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGraphicsOpacityEffect,
-    QSizeGrip, QApplication,
+    QSizeGrip, QApplication, QScrollArea, QFrame, QPushButton,
 )
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QPoint, QRect, QSize,
@@ -31,6 +31,103 @@ from PyQt6.QtGui import (
 )
 
 from lrc_parser import LyricContext, LyricLine
+
+
+# ──────────────────────────────────────────────────────────────
+# Clickable Lyric Row for Sync List
+# ──────────────────────────────────────────────────────────────
+
+class ClickableLyricRow(QFrame):
+    """A clickable row in the lyrics sync list."""
+    clicked = pyqtSignal(int)  # Emits timestamp_ms
+
+    def __init__(self, line: LyricLine, index: int, parent=None):
+        super().__init__(parent)
+        self.line = line
+        self.index = index
+        self.timestamp_ms = line.timestamp_ms
+        self._is_current = False
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Layout
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(10)
+
+        # Format timestamp: mm:ss
+        total_seconds = line.timestamp_ms // 1000
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        time_str = f"{minutes:02d}:{seconds:02d}"
+
+        self.time_label = QLabel(time_str, self)
+        self.time_label.setStyleSheet(
+            "color: rgba(255, 255, 255, 0.4); font-size: 11px; font-family: 'Consolas', 'Courier New', monospace;"
+        )
+        layout.addWidget(self.time_label)
+
+        # Text layout (original + translation)
+        text_widget = QWidget(self)
+        text_layout = QVBoxLayout(text_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+
+        display_text = line.translation if line.translation else line.text
+        self.text_label = QLabel(display_text, text_widget)
+        self.text_label.setWordWrap(True)
+        self.text_label.setStyleSheet("color: #FFFFFF; font-size: 12px; font-weight: 500;")
+        text_layout.addWidget(self.text_label)
+
+        if line.translation and line.text:
+            self.sub_label = QLabel(line.text, text_widget)
+            self.sub_label.setWordWrap(True)
+            self.sub_label.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 10px;")
+            text_layout.addWidget(self.sub_label)
+
+        layout.addWidget(text_widget, stretch=1)
+        self.update_style()
+
+    def set_current(self, is_current: bool):
+        if self._is_current != is_current:
+            self._is_current = is_current
+            self.update_style()
+
+    def update_style(self):
+        if self._is_current:
+            self.setStyleSheet("""
+                ClickableLyricRow {
+                    background: rgba(124, 58, 237, 0.25);
+                    border: 1px solid rgba(124, 58, 237, 0.5);
+                    border-radius: 6px;
+                }
+            """)
+            self.time_label.setStyleSheet(
+                "color: #A855F7; font-size: 11px; font-family: 'Consolas', 'Courier New', monospace; font-weight: bold;"
+            )
+        else:
+            self.setStyleSheet("""
+                ClickableLyricRow {
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 6px;
+                }
+                ClickableLyricRow:hover {
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                }
+            """)
+            self.time_label.setStyleSheet(
+                "color: rgba(255, 255, 255, 0.4); font-size: 11px; font-family: 'Consolas', 'Courier New', monospace;"
+            )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.timestamp_ms)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -420,19 +517,15 @@ class OverlayWindow(QWidget):
     Features:
         - Frameless, transparent, always-on-top
         - Glassmorphism background
-        - 3-line lyric display with animations
-        - Draggable (click and drag anywhere)
-        - Resizable (bottom-right grip)
-        - Click-through mode toggle
-        - Mini mode (single line)
-    
     Signals:
         visibility_changed(bool): Emitted when overlay is shown/hidden
         settings_requested: Emitted when user double-clicks overlay
+        lyric_line_clicked: Emitted when a lyric line is clicked in the list (timestamp_ms)
     """
 
     visibility_changed = pyqtSignal(bool)
     settings_requested = pyqtSignal()
+    lyric_line_clicked = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -457,6 +550,11 @@ class OverlayWindow(QWidget):
         self._accent_color = QColor("#7C3AED")
         self._glow_color = QColor("#1E1B4B")
         self._base_font_size = DEFAULT_FONT_SIZE
+        self._lyric_rows = []
+        self._raw_lyric_lines = []
+
+        # Enable mouse tracking for hover events
+        self.setMouseTracking(True)
 
         # ── Layout ──
         self._setup_ui()
@@ -479,37 +577,230 @@ class OverlayWindow(QWidget):
         self.resize(650, 180)
 
     def _setup_ui(self):
-        """Build the lyric display layout."""
+        """Build the lyric display layout with expandable list."""
         # Main layout
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
 
         # Container widget (for content inside the glassmorphism panel)
         self._container = QWidget(self)
-        container_layout = QVBoxLayout(self._container)
-        container_layout.setContentsMargins(15, 15, 15, 8)
-        container_layout.setSpacing(4)
+        self._container_layout = QHBoxLayout(self._container)
+        self._container_layout.setContentsMargins(15, 10, 15, 8)
+        self._container_layout.setSpacing(15)
 
-        # ── Lyric labels ──
+        # ── Left Column: Lyrics Display ──
+        self._left_widget = QWidget(self)
+        left_layout = QVBoxLayout(self._left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+
+        # Setup Hover Toolbar
+        self._setup_toolbar()
+        left_layout.addWidget(self._toolbar)
+
+        # Lyric labels
         self._prev_label = LyricLabel("previous", self)
         self._curr_label = LyricLabel("current", self)
         self._next_label = LyricLabel("next", self)
 
-        container_layout.addWidget(self._prev_label)
-        container_layout.addWidget(self._curr_label, stretch=2)
-        container_layout.addWidget(self._next_label)
+        left_layout.addWidget(self._prev_label)
+        left_layout.addWidget(self._curr_label, stretch=2)
+        left_layout.addWidget(self._next_label)
 
-        # ── Status bar ──
+        # Status bar
         self._status_bar = StatusBar(self)
-        container_layout.addWidget(self._status_bar)
+        left_layout.addWidget(self._status_bar)
 
-        main_layout.addWidget(self._container)
+        self._container_layout.addWidget(self._left_widget, stretch=2)
+
+        # ── Right Column: Scrollable Lyric List ──
+        self._setup_lyric_list()
+        self._container_layout.addWidget(self._lyric_list_widget, stretch=1)
+        self._lyric_list_widget.hide()  # Hidden by default
+
+        self._main_layout.addWidget(self._container)
 
         # ── Resize grip (bottom-right corner) ──
         self._size_grip = QSizeGrip(self)
         self._size_grip.setFixedSize(16, 16)
         self._size_grip.setStyleSheet("background: transparent;")
+
+    def _setup_toolbar(self):
+        """Create the hover control toolbar."""
+        self._toolbar = QWidget(self)
+        self._toolbar.setFixedHeight(24)
+        
+        layout = QHBoxLayout(self._toolbar)
+        layout.setContentsMargins(5, 0, 5, 0)
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Buttons
+        self._btn_list = QPushButton("📋 Lyrics List", self._toolbar)
+        self._btn_settings = QPushButton("⚙ Settings", self._toolbar)
+        self._btn_close = QPushButton("✕ Hide", self._toolbar)
+
+        btn_style = self._get_normal_btn_style()
+        for btn in (self._btn_list, self._btn_settings, self._btn_close):
+            btn.setStyleSheet(btn_style)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            layout.addWidget(btn)
+
+        self._btn_list.clicked.connect(self._toggle_lyric_list)
+        self._btn_settings.clicked.connect(self.settings_requested.emit)
+        self._btn_close.clicked.connect(self.hide)
+
+        self._toolbar.hide()
+
+    def _setup_lyric_list(self):
+        """Create the scrollable lyric list on the right side."""
+        self._lyric_list_widget = QWidget(self)
+        layout = QVBoxLayout(self._lyric_list_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(6)
+
+        header = QLabel("Sync List (Click line to sync)", self._lyric_list_widget)
+        header.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 11px; font-weight: bold;")
+        layout.addWidget(header)
+
+        self._scroll_area = QScrollArea(self._lyric_list_widget)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: rgba(255, 255, 255, 0.02);
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(124, 58, 237, 0.5);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+
+        self._list_container = QWidget()
+        self._list_container.setStyleSheet("background: transparent;")
+        self._list_layout = QVBoxLayout(self._list_container)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(4)
+        self._list_layout.addStretch()
+
+        self._scroll_area.setWidget(self._list_container)
+        layout.addWidget(self._scroll_area)
+
+    def _toggle_lyric_list(self):
+        """Toggle the visibility of the scrollable lyric list."""
+        if self._lyric_list_widget.isHidden():
+            self._lyric_list_widget.show()
+            self._btn_list.setStyleSheet(self._get_active_btn_style())
+            self.resize(self.width() + 300, self.height())
+        else:
+            self._lyric_list_widget.hide()
+            self._btn_list.setStyleSheet(self._get_normal_btn_style())
+            self.resize(max(350, self.width() - 300), self.height())
+
+    def set_lyrics_list(self, lines: list[LyricLine], is_synced: bool):
+        """Populate the scrollable lyric list with the given lines."""
+        # Clear existing rows
+        for row in self._lyric_rows:
+            self._list_layout.removeWidget(row)
+            row.deleteLater()
+        self._lyric_rows.clear()
+        self._raw_lyric_lines = lines
+
+        if not is_synced or not lines:
+            self._lyric_list_widget.setEnabled(False)
+            placeholder = QLabel("No synced lyrics available for manual sync.", self._list_container)
+            placeholder.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 11px; font-style: italic; padding: 10px;")
+            self._list_layout.insertWidget(0, placeholder)
+            self._lyric_rows.append(placeholder)
+            return
+
+        self._lyric_list_widget.setEnabled(True)
+
+        for i, line in enumerate(lines):
+            row = ClickableLyricRow(line, i, self._list_container)
+            row.clicked.connect(self.lyric_line_clicked.emit)
+            self._list_layout.insertWidget(i, row)
+            self._lyric_rows.append(row)
+
+    def _scroll_to_widget(self, widget: QWidget):
+        """Scroll the QScrollArea to center the given widget smoothly."""
+        scroll_bar = self._scroll_area.verticalScrollBar()
+        if not scroll_bar:
+            return
+
+        widget_y = widget.mapTo(self._list_container, QPoint(0, 0)).y()
+        widget_height = widget.height()
+        viewport_height = self._scroll_area.viewport().height()
+
+        target_scroll_val = widget_y - (viewport_height - widget_height) // 2
+
+        if self._animations_enabled:
+            if hasattr(self, '_scroll_animation') and self._scroll_animation.state() == QPropertyAnimation.State.Running:
+                self._scroll_animation.stop()
+            self._scroll_animation = QPropertyAnimation(scroll_bar, b"value", self)
+            self._scroll_animation.setDuration(200)
+            self._scroll_animation.setStartValue(scroll_bar.value())
+            self._scroll_animation.setEndValue(target_scroll_val)
+            self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._scroll_animation.start()
+        else:
+            scroll_bar.setValue(target_scroll_val)
+
+    def _get_normal_btn_style(self) -> str:
+        return """
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                color: #E0E0E0;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(124, 58, 237, 0.3);
+                border-color: rgba(124, 58, 237, 0.5);
+                color: #FFFFFF;
+            }
+            QPushButton:pressed {
+                background: rgba(124, 58, 237, 0.5);
+            }
+        """
+
+    def _get_active_btn_style(self) -> str:
+        return """
+            QPushButton {
+                background: rgba(124, 58, 237, 0.4);
+                color: #FFFFFF;
+                border: 1px solid rgba(124, 58, 237, 0.6);
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(124, 58, 237, 0.5);
+                border-color: rgba(124, 58, 237, 0.7);
+            }
+            QPushButton:pressed {
+                background: rgba(124, 58, 237, 0.7);
+            }
+        """
 
     def _center_on_screen(self):
         """Position the overlay at the bottom-right of the primary screen (near tray)."""
@@ -645,6 +936,18 @@ class OverlayWindow(QWidget):
 
         # Karaoke progress
         self._curr_label.set_karaoke_progress(context.progress)
+
+        # Update row highlights in the scroll list
+        current_idx = context.current_index
+        for row in self._lyric_rows:
+            if isinstance(row, ClickableLyricRow):
+                row.set_current(row.index == current_idx)
+
+        # Auto-scroll to the current row
+        if 0 <= current_idx < len(self._lyric_rows):
+            target_row = self._lyric_rows[current_idx]
+            if isinstance(target_row, ClickableLyricRow) and self._lyric_list_widget.isVisible():
+                self._scroll_to_widget(target_row)
 
         # Show overlay if hidden during auto-hide idle
         if self._is_idle and curr_text:
@@ -827,8 +1130,19 @@ class OverlayWindow(QWidget):
             self.resize(800, 220)
 
     # ──────────────────────────────────────────────────────────
-    # Mouse Events (Drag to move)
+    # Mouse Events (Drag to move & hover toolbar)
     # ──────────────────────────────────────────────────────────
+
+    def enterEvent(self, event):
+        """Show hover controls when mouse enters."""
+        if not self._click_through:
+            self._toolbar.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Hide hover controls when mouse leaves."""
+        self._toolbar.hide()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         """Handle mouse press for dragging."""

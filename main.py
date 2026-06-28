@@ -336,6 +336,7 @@ class VibeLyricsApp:
 
         # Overlay → settings panel
         self._overlay.settings_requested.connect(self.show_settings)
+        self._overlay.lyric_line_clicked.connect(self.adjust_track_offset)
 
     def start(self):
         """Start the application — launches silently in system tray."""
@@ -387,6 +388,7 @@ class VibeLyricsApp:
         # Clear old lyrics
         self._sync_engine.clear()
         self._overlay.update_lyrics(self._sync_engine.get_context(0))
+        self._overlay.set_lyrics_list([], False)
 
         # Dynamic cover art theming
         if self._settings_manager.get("dynamic_theme", True) and hasattr(media_info, 'thumbnail_bytes') and media_info.thumbnail_bytes:
@@ -482,6 +484,7 @@ class VibeLyricsApp:
                     if line_s in result.translations:
                         line.translation = result.translations[line_s]
             self._sync_engine.load_lyrics(lines, is_synced=True)
+            self._overlay.set_lyrics_list(lines, is_synced=True)
         elif result.plain_lyrics:
             lines = parse_plain_lyrics(result.plain_lyrics)
             # Map translations if present
@@ -491,6 +494,7 @@ class VibeLyricsApp:
                     if line_s in result.translations:
                         line.translation = result.translations[line_s]
             self._sync_engine.load_lyrics(lines, is_synced=False)
+            self._overlay.set_lyrics_list(lines, is_synced=False)
             self._overlay.show_plain_lyrics_message()
         else:
             self._overlay.show_no_lyrics(result.title, result.artist)
@@ -670,6 +674,39 @@ class VibeLyricsApp:
         # Update UI slider
         self._settings_panel.set_current_track(self._current_track_key)
         self._overlay.set_status(f"⏱ Track: {track_ms / 1000:+.1f}s")
+        self._sync_tick()
+
+    def adjust_track_offset(self, clicked_timestamp_ms: int):
+        """Adjust the track offset so the clicked lyric line aligns with current playback."""
+        if not self._current_track or not self._current_track_key:
+            return
+
+        # Get current playback position
+        import time
+        if self._media_handler._is_playing:
+            elapsed = (time.time() - self._media_handler._last_position_time) * 1000
+            position_ms = int(self._media_handler._last_position_ms + elapsed)
+        else:
+            position_ms = self._media_handler._last_position_ms
+
+        global_offset = self._settings_manager.get("global_offset_ms", 0)
+
+        # Calculate new track offset
+        # adjusted_position = position_ms + global_offset + new_track_offset = clicked_timestamp_ms
+        new_track_offset = clicked_timestamp_ms - position_ms - global_offset
+
+        # Save offset
+        offsets = self._settings_manager.get("song_offsets", {})
+        offsets[self._current_track_key] = new_track_offset
+        self._settings_manager.set("song_offsets", offsets)
+
+        # Update UI slider
+        self._settings_panel.set_current_track(self._current_track_key)
+        
+        # Show status message
+        self._overlay.set_status(f"⏱ Synced! Offset: {new_track_offset / 1000:+.1f}s")
+        
+        # Immediate update
         self._sync_tick()
 
     def toggle_mini_mode(self):
